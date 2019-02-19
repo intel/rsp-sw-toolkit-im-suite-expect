@@ -2,6 +2,11 @@
 
 Expect is a simple testing helper library to make Go's test expectations more obvious.
 
+Add to your project with: 
+```bash
+> govendor add github.impcloud.net/Responsive-Retail-Inventory/expect
+```
+
 ## Usage and Examples
 
 Wrap a `*testing.T` instance with a `*expect.TWrapper`. You can use it just as
