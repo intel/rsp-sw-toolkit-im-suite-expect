@@ -4,7 +4,7 @@ Expect is a simple testing helper library to make Go's test expectations more ob
 
 Add to your project with: 
 ```bash
-> govendor add github.impcloud.net/Responsive-Retail-Inventory/expect
+> govendor fetch github.impcloud.net/Responsive-Retail-Inventory/expect
 ```
 
 ## Usage and Examples

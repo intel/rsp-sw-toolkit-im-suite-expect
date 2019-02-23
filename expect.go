@@ -35,6 +35,7 @@ type TWrapper struct {
 }
 
 // WrapT returns a TWrapper, which allows several fluent assertions while testing.
+//noinspection GoUnusedExportedFunction
 func WrapT(t *testing.T) *TWrapper {
 	return (&TWrapper{T: t}).ContinueOnMismatch()
 }
@@ -130,13 +131,19 @@ func isNil(v interface{}) bool {
 // ShouldNotBeNil expect v to not be nil.
 func (t *TWrapper) ShouldNotBeNil(v interface{}) {
 	t.Helper()
-	t.ShouldBeFalse(isNil(v))
+	if !isNil(v) {
+		return
+	}
+	t.onFail("value is nil, but shouldn't be (type %T)", v)
 }
 
 // ShouldBeNil expect v to be nil.
 func (t *TWrapper) ShouldBeNil(v interface{}) {
 	t.Helper()
-	t.ShouldBeTrue(isNil(v))
+	if isNil(v) {
+		return
+	}
+	t.onFail("expected value to be nil, but it's %+v (type %T)", v, v)
 }
 
 // ShouldBeEmptyStr expects v to be an empty string.
