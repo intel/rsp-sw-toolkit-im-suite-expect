@@ -183,16 +183,13 @@ func (t *TWrapper) ShouldSucceed(err error) {
 	}
 }
 
-// ShouldSucceedLater returns a function which can be called later to check that
-// the given function succeeds. It's meant to be used for deferred functions, such as:
-//     defer w.ShouldSucceedLater(c.Close())
-// which will run as the function exits, ensuring that c.Close() succeeds.
-func (t *TWrapper) ShouldSucceedLater(f func() error) func() error {
+// ShouldSucceedLater takes a function, which it calls using ShouldSucceed.
+// It's meant to be used for deferred functions, such as:
+//     defer w.ShouldSucceedLater(c.Close)
+// which will defer w.ShouldSucceed(c.Close()), ensuring that c.Close() succeeds.
+func (t *TWrapper) ShouldSucceedLater(f func() error) {
 	t.Helper()
-	return func() error {
-		t.ShouldSucceed(f())
-		return nil
-	}
+	t.ShouldSucceed(f())
 }
 
 // ShouldHaveError takes a result interface and error and expects that the error
