@@ -1,6 +1,6 @@
 /*
  * INTEL CONFIDENTIAL
- * Copyright (2018) Intel Corporation.
+ * Copyright (2019) Intel Corporation.
  *
  * The source code contained or described herein and all documents related to the source code ("Material")
  * are owned by Intel Corporation or its suppliers or licensors. Title to the Material remains with
@@ -79,6 +79,28 @@ func (t *TWrapper) ContinueOnMismatch() *TWrapper {
 	})
 }
 
+func equalIgnoringType(x, y interface{}) bool {
+	if (x == nil || y == nil) && (x == nil && y == nil) {
+		return false
+	}
+
+	xVal := reflect.ValueOf(x)
+	yVal := reflect.ValueOf(y)
+	xType := reflect.TypeOf(x)
+	yType := reflect.TypeOf(y)
+
+	switch {
+	case !xVal.IsValid() || !yVal.IsValid():
+		return false
+	case xType.ConvertibleTo(yType):
+		return reflect.DeepEqual(y, xVal.Convert(yType).Interface())
+	case yType.ConvertibleTo(xType):
+		return reflect.DeepEqual(x, yVal.Convert(xType).Interface())
+	default:
+		return false
+	}
+}
+
 // ShouldBeEqual expects x and y to be equal, as compared by reflect.DeepEqual.
 //
 // See the docs for DeepEqual for all the rules, but in particular note that it
@@ -95,32 +117,42 @@ func (t *TWrapper) ShouldBeEqual(x, y interface{}) {
 		return
 	}
 
-	if reflect.TypeOf(x) == reflect.TypeOf(y) &&
-		isStringOrByteSlice(x) && isStringOrByteSlice(y) {
-		var b1, b2 []byte
-		b1, ok := x.([]byte)
-		if ok {
-			b2 = y.([]byte)
+	// if they have different types, but one can be converted to the other,
+	// see if they're equal when converted to the same type
+	if equalIgnoringType(x, y) {
+		if stringish(x) || stringish(y) {
+			t.onFail("byte values are the same, but they have different types: %T != %T", x, y)
 		} else {
-			b1 = []byte(x.(string))
-			b2 = []byte(y.(string))
+			t.onFail("%+v == %+v, but they have different types: %T != %T", x, y, x, y)
 		}
+		return
+	}
+
+	if stringish(x) && stringish(y) {
+		b1 := reflect.ValueOf(x).Convert(reflect.TypeOf([]byte{})).Interface().([]byte)
+		b2 := reflect.ValueOf(y).Convert(reflect.TypeOf([]byte{})).Interface().([]byte)
 		idx := firstDiff(b1, b2)
-		t.onFail(""+
+
+		t.onFail("\n"+
 			"byte-level differences:\n"+
-			"    %[3]*sv--first diff at idx %[3]d\n"+
+			"      %[3]*[4]sv--first diff at idx %[5]d\n"+
+			"S1: %03[1]d\n"+
+			"S2: %03[2]d\n"+
+			"      %[3]*[4]s^--first diff at idx %[5]d\n"+
+			"string-level differences:\n\n"+
+			"    %[5]*[4]sv--first diff at idx %[5]d\n"+
 			"S1: %[1]s\n"+
 			"S2: %[2]s\n"+
-			"    %[3]*s^--first diff at idx %[3]d",
-			b1, b2, idx, "")
+			"    %[5]*[4]s^--first diff at idx %[5]d",
+			b1, b2, idx*4, "", idx)
 		return
 	}
 
 	t.onFail("%+v != %+v (types %T, %T)", x, y, x, y)
 }
 
-// firstDiff returns smallest index i such that b1[i] != b2[i]; if b1 == b2, then
-// the return value is their length.
+// firstDiff returns smallest index i such that b1[i] != b2[i].
+// If b1 == b2, then the return value is their lengths.
 func firstDiff(b1, b2 []byte) int {
 	smaller := len(b2)
 	if len(b1) < len(b2) {
@@ -271,6 +303,66 @@ func contains(iter Iterator, v reflect.Value) bool {
 	return false
 }
 
+// ShouldContainValues confirms the items in toFind are values of the map container.
+// It fails if containerMap is not actually a map.
+func (t *TWrapper) ShouldContainValues(containerMap, toFind interface{}) {
+	t.Helper()
+	it := t.ShouldHaveResult(NewValueIterator(containerMap)).(Iterator)
+	t.ShouldContain(it, toFind)
+}
+
+// ShouldContainValuesFrom confirms toFind is a map and its values are in the container.
+// It fails if toFindMap is not actually a map.
+func (t *TWrapper) ShouldContainValuesFrom(container, toFindMap interface{}) {
+	t.Helper()
+	it := t.ShouldHaveResult(NewValueIterator(toFindMap)).(Iterator)
+	t.ShouldContain(container, it)
+}
+
+// ShouldHaveMatchingValues confirms both inputs are maps and that all the values
+// in toFindMap appear as values in the containerMap.
+//
+// It fails if either input is not actually a map.
+func (t *TWrapper) ShouldHaveMatchingValues(containerMap, toFindMap interface{}) {
+	t.Helper()
+	cIt := t.ShouldHaveResult(NewValueIterator(containerMap)).(Iterator)
+	fIt := t.ShouldHaveResult(NewValueIterator(toFindMap)).(Iterator)
+	t.ShouldContain(cIt, fIt)
+}
+
+// ShouldHaveOrder confirms two iterable sequences have the same items in the
+// same order.
+//
+// It advances both iterables simultaneously and only succeeds if the values
+// returned by both are equal. If one iterator returns more elements than the
+// other, then it fails.
+func (t *TWrapper) ShouldHaveOrder(x, y interface{}) {
+	t.Helper()
+	it1, err := NewIterator(x)
+	if err != nil {
+		t.onFail("type %T for %+v is not iterable, so can't check if it matches %+v (type %T)",
+			x, x, y, y)
+	}
+
+	it2, err := NewIterator(y)
+	if err != nil {
+		t.onFail("type %T for %+v is not iterable, so can't check if it matches %+v (type %T)",
+			y, y, x, x)
+		return
+	}
+
+	for {
+		it1HasNext := it1.Next()
+		it2HasNext := it2.Next()
+		if (it1HasNext && !it2HasNext) || (!it1HasNext && it2HasNext) {
+			t.onFail("sequences have different lengths\nx: type %T: %+v\ny: type %T: %+v",
+				x, x, y, y)
+			return
+		}
+		t.ShouldBeEqual(it1.Value().Interface(), it2.Value().Interface())
+	}
+}
+
 // ShouldContain checks that the container holds at least one instance of toFind,
 // or at least one instance of every element of toFind, if toFind is made up of
 // elements.
@@ -319,7 +411,11 @@ func (t *TWrapper) ShouldContain(container, toFind interface{}) {
 	}
 }
 
-func isStringOrByteSlice(x interface{}) bool {
+// stringish returns true if the interface x can be interpreted as a string.
+func stringish(x interface{}) bool {
+	if x == nil {
+		return false
+	}
 	xt := reflect.TypeOf(x)
 	return xt.Kind() == reflect.String ||
 		((xt.Kind() == reflect.Slice || xt.Kind() == reflect.Array) &&
@@ -390,10 +486,52 @@ func (t *TWrapper) ShouldBeEmptyStr(v interface{}) {
 	t.ShouldBeEqual("", v)
 }
 
-// ShouldNotBeEmptyStr expect v not to be an empty string.
+// ShouldNotBeEmptyStr expects v not to be an empty string.
 func (t *TWrapper) ShouldNotBeEmptyStr(v interface{}) {
 	t.Helper()
 	t.ShouldNotBeEqual("", v)
+}
+
+// ShouldBeEmpty passes if v is an empty string, array, slice, map, or channel;
+// if it's any other type, it fails regardless its value.
+func (t *TWrapper) ShouldBeEmpty(v interface{}) {
+	t.Helper()
+	if v == nil {
+		t.onFail("expected value to be empty, but it's nil (type %T)", v, v)
+		return
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind(){
+	default:
+		t.onFail("expected value with a length, but it's %+v (type %T)", v, v)
+		return
+	case reflect.Array, reflect.Slice, reflect.String, reflect.Map, reflect.Chan:
+		if rv.Len() != 0 {
+			return
+		}
+	}
+	t.onFail("expected value to be empty, but it's %+v (type %T)", v, v)
+}
+
+// ShouldNotBeEmpty fails if v is an empty string, array, slice, map, or channel;
+// if it's any other type, it fails regardless its value.
+func (t *TWrapper) ShouldNotBeEmpty(v interface{}) {
+	t.Helper()
+	if v == nil {
+		t.onFail("expected non-empty value, but %+v is nil (type %T)", v, v)
+		return
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind(){
+	default:
+		t.onFail("expected value with a length, but it's %+v (type %T)", v, v)
+		return
+	case reflect.Array, reflect.Slice, reflect.String, reflect.Map, reflect.Chan:
+		if rv.Len() != 0 {
+			return
+		}
+	}
+	t.onFail("expected value to not be empty, but it's %+v (type %T)", v, v)
 }
 
 // ShouldContainStr expects string x to contain y.
@@ -434,15 +572,34 @@ func (t *TWrapper) ShouldSucceedLater(f func() error) {
 // is not nil; it can be used with the immediate result of a call that's expected
 // to fail, but has a return value:
 //     w.ShouldHaveError(os.Open("missingFile"))
+//
+// If the error is not nil, but the result is a non-nil, non-empty, non-zero
+// instance of the underlying interface type, this method logs that result, but
+// doesn't fail the test.
 func (t *TWrapper) ShouldHaveError(result interface{}, err error) error {
 	t.Helper()
 	if err == nil {
 		t.onFail("expected an error, but none occurred")
 	}
 
-	if result != nil {
-		v := reflect.ValueOf(result)
-		if v.Kind() != reflect.Ptr || !v.IsNil() {
+	v := reflect.ValueOf(result)
+
+	switch v.Kind() {
+	default:
+		if v.Interface() != reflect.Zero(v.Type()).Interface() {
+			t.Logf("function returned result: %+v", result)
+		}
+	case reflect.Invalid:
+	case reflect.Ptr, reflect.Func, reflect.Interface, reflect.UnsafePointer:
+		if !v.IsNil() {
+			t.Logf("function returned result: %+v", result)
+		}
+	case reflect.Array, reflect.String:
+		if v.Len() != 0 {
+			t.Logf("function returned result: %+v", result)
+		}
+	case reflect.Chan, reflect.Map, reflect.Slice:
+		if !v.IsNil() || v.Len() != 0 {
 			t.Logf("function returned result: %+v", result)
 		}
 	}

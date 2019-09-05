@@ -4,7 +4,7 @@ Expect is a simple testing helper library to make Go's test expectations more ob
 
 Add to your project with: 
 ```bash
-> govendor fetch github.impcloud.net/Responsive-Retail-Inventory/expect
+> govendor fetch github.impcloud.net/RSP-Inventory-Suite/expect
 ```
 
 ## Usage and Examples
@@ -59,17 +59,19 @@ Expect makes it easier to handle functions that return errors and other types:
     w.ShouldSucceed(err)
     
     // for the more common case of 1 return and 1 error, simply type-assert the result 
+    resp := w.ShouldHaveResult(download("http://someurl.com/")).(*http.Response)
+    
+
+    // simply type-assert an expected result for functions that return (<T>, error)
     testfile := w.ShouldHaveResult(ioutil.TempFile("", "")).(*os.File)
 	
     // ShouldSucceedLater returns a function that calls & checks a function later on;
-    // this is most useful for functions that are deferred:
-    func testFileStuff(t *testing.T) {
+    // this is most useful for functions that are deferred.
 	    defer w.ShouldSucceedLater(func() error { return os.Remove(testfile.Name()) })
 	    defer w.ShouldSucceedLater(testfile.Close())
 	    testfileContent := w.ShouldHaveResult(ioutil.ReadFile(testfile.Name())).([]byte)
 	    w.ShouldBeEqual(testfileContent, []byte("hello"))
 	    w.ShouldBeEqual(testfileContent, content)
-    }
 ```
 
 ## List of Functions
