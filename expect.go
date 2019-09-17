@@ -50,13 +50,35 @@ func (t *TWrapper) dup(ff failFunc) *TWrapper {
 	}
 }
 
-// As adds d to the message if an expectation fails. Use it with statements like:
+// As adds the obj's Go representation (using the verb %+v) if an expectation
+// fails. Use it with statements like:
 //     w.As("empty json input").ShouldFail(validateJSON(""))
-func (t *TWrapper) As(d interface{}) *TWrapper {
+// or
+//     w.As(myType{f1: "value"}).Should...
+// On failure, prints messages like:
+//     "Failure for 'empty json input': expected an error, but none occurred.
+// or
+//     "Failure for '{f1: "value"}': expected an error, but none occurred.
+func (t *TWrapper) As(obj interface{}) *TWrapper {
 	t.Helper()
-	t2 := t.dup(func(format string, args ...interface{}) {
+	t2 := t.dup(func(failFmt string, failArgs ...interface{}) {
 		t.Helper()
-		t.onFail(fmt.Sprintf("Failure for '%+v': %s", d, format), args...)
+		t.onFail(fmt.Sprintf("Failure for '%+v': %s", obj, failFmt), failArgs...)
+	})
+	return t2
+}
+
+// Asf works like As, but uses a format string and arguments instead printing
+// the input with %+v.
+//
+// fmt.Sprintf is only called if an expectation fails, so this can speed up a
+// test that loops over a large number of values and uses `As(fmt.Sprint(...))`.
+func (t *TWrapper) Asf(format string, args ...interface{}) *TWrapper {
+	t.Helper()
+	t2 := t.dup(func(failFmt string, failArgs ...interface{}) {
+		t.Helper()
+		t.onFail(fmt.Sprintf("Failure for '%s': %s",
+			fmt.Sprintf(format, args...), failFmt), failArgs...)
 	})
 	return t2
 }
@@ -167,6 +189,7 @@ func firstDiff(b1, b2 []byte) int {
 }
 
 // Iterator types can be used for containment comparisons.
+// See GetIterator for more information.
 type Iterator interface {
 	// Next advances the iterator and returns true if there are more elements.
 	// If Next returns true, Value must return an element and not panic.
@@ -190,9 +213,18 @@ type Iterable interface {
 	GetIterator() Iterator
 }
 
+// RuneIterable implements an iterator that returns runes for a string.
+type RuneIterable string
+
+func (r RuneIterable) GetIterator() Iterator {
+	return &listIter{
+		idx: 0, len: len(r), idxFunc: func(i int) reflect.Value { return reflect.ValueOf(r[i]) },
+	}
+}
+
 type listIter struct {
 	idx, len int
-	list     reflect.Value
+	idxFunc  func(int) reflect.Value
 }
 
 func (li *listIter) Next() bool {
@@ -210,8 +242,7 @@ func (li *listIter) Value() reflect.Value {
 	if li.idx == li.len {
 		panic("Value called on exhausted list iterator")
 	}
-	v := li.list.Index(li.idx)
-	return v
+	return li.idxFunc(li.idx)
 }
 
 func (li *listIter) Reset() {
@@ -234,24 +265,23 @@ func (mki *mapKeyIter) Value() reflect.Value {
 	return mki.keys.Value().Interface().(reflect.Value)
 }
 
-type mapValIter mapKeyIter
+type mapValIter struct {
+	*reflect.MapIter
+	uMap reflect.Value
+}
 
-func (mi *mapValIter) Value() reflect.Value {
-	k := mi.keys.Value()
-	return mi.uMap.MapIndex(k)
-}
 func (mi *mapValIter) Reset() {
-	((*mapKeyIter)(mi)).Reset()
-}
-func (mi *mapValIter) Next() bool {
-	return ((*mapKeyIter)(mi)).Next()
+	mi.MapIter = mi.uMap.MapRange()
 }
 
 // NewIterator returns an Iterator for a slice, array, string, or map, or a type
 // that implements the Iterable or Iterator interfaces.
 //
 // Other types return a nil iterator and an error. Map types return an iterator
-// over its keys; to obtain an iterator over its values, use NewValueIterator.
+// over their keys; to obtain an iterator over its values, use NewValueIterator.
+//
+// By default, strings iterate over their bytes. To instead iterate over its
+// runes, cast it using RuneIterable.
 func NewIterator(i interface{}) (Iterator, error) {
 	if it, ok := i.(Iterator); ok {
 		return it, nil
@@ -263,7 +293,7 @@ func NewIterator(i interface{}) (Iterator, error) {
 	v := reflect.ValueOf(i)
 	switch v.Kind() {
 	case reflect.Slice, reflect.Array, reflect.String:
-		return &listIter{len: v.Len(), list: v, idx: -1}, nil
+		return &listIter{len: v.Len(), idxFunc: v.Index, idx: -1}, nil
 	case reflect.Map:
 		li, err := NewIterator(v.MapKeys())
 		if err != nil {
@@ -284,11 +314,7 @@ func NewValueIterator(i interface{}) (Iterator, error) {
 	if v.Kind() != reflect.Map {
 		return nil, errors.New("can only create value iterators for maps")
 	}
-	it, err := NewIterator(i)
-	if err != nil {
-		return nil, err
-	}
-	return (*mapValIter)(it.(*mapKeyIter)), nil
+	return &mapValIter{v.MapRange(), v}, nil
 }
 
 // contains returns true if v is any element of the given iterator.
@@ -501,7 +527,7 @@ func (t *TWrapper) ShouldBeEmpty(v interface{}) {
 		return
 	}
 	rv := reflect.ValueOf(v)
-	switch rv.Kind(){
+	switch rv.Kind() {
 	default:
 		t.onFail("expected value with a length, but it's %+v (type %T)", v, v)
 		return
@@ -522,7 +548,7 @@ func (t *TWrapper) ShouldNotBeEmpty(v interface{}) {
 		return
 	}
 	rv := reflect.ValueOf(v)
-	switch rv.Kind(){
+	switch rv.Kind() {
 	default:
 		t.onFail("expected value with a length, but it's %+v (type %T)", v, v)
 		return
