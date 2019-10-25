@@ -6,7 +6,7 @@ rrpBuildGoCode {
     dockerImageName = "rsp/${projectKey}"
     protexProjectName = 'bb-expect'
     buildImage = 'amr-registry.caas.intel.com/rrp/ci-go-build-image:1.12.0-alpine'
-
+    skipDocker = true
     infra = [
         stackName: 'RSP-Codepipeline-Expect'
     ]
