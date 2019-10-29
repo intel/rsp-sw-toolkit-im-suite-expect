@@ -532,7 +532,7 @@ func (t *TWrapper) ShouldBeEmpty(v interface{}) {
 		t.onFail("expected value with a length, but it's %+v (type %T)", v, v)
 		return
 	case reflect.Array, reflect.Slice, reflect.String, reflect.Map, reflect.Chan:
-		if rv.Len() != 0 {
+		if rv.Len() == 0 {
 			return
 		}
 	}
