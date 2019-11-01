@@ -1,3 +1,3 @@
-module github.impcloud.net/RSP-Inventory-Suite/expect
+module github.com/intel/rsp-sw-toolkit-im-suite-expect
 
 go 1.12
