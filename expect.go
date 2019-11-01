@@ -566,22 +566,44 @@ func (t *TWrapper) ShouldContainStr(x, y string) {
 	t.As(fmt.Sprintf("'%s' should contain '%s'", x, y)).ShouldBeTrue(strings.Contains(x, y))
 }
 
-// ShouldFail expects a given err to not be nil; it can be used with the immediate
-// result of a function, such as w.ShouldFail(funcThatReturnsError()).
-func (t *TWrapper) ShouldFail(err error) error {
+// ShouldFail fails if none of its args are a non-nil error.
+//
+// It can be used with the immediate result of a function: w.ShouldFail(f()).
+// If the function doesn't return any error types, it will always fail.
+func (t *TWrapper) ShouldFail(args ...interface{}) {
 	t.Helper()
-	if err == nil {
+
+	var errs []error
+	for _, arg := range args {
+		if err, ok := arg.(error); ok && err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) == 0 {
 		t.onFail("expected an error, but none occurred")
 	}
-	return err
 }
 
-// ShouldSucceed expects a given err to be nil; it can be used with the immediate
-// result of a function, such as w.ShouldSucceed(funcThatReturnsError()).
-func (t *TWrapper) ShouldSucceed(err error) {
+// ShouldSucceed fails if any of its args have type error and are non-nil.
+//
+// It can be used with the immediate result of a function: w.ShouldSucceed(f()).
+// If the function doesn't return any error types, it will always succeed.
+//
+// This can also be used to verify the results of multiple functions that each
+// return a single error: w.ShouldSucceed(f1(), f2(), f3()). Unfortunately, Go
+// won't allow you to pass in multiple functions if one or more of them return
+// more than one result.
+func (t *TWrapper) ShouldSucceed(args ...interface{}) {
 	t.Helper()
-	if err != nil {
-		t.onFail("an unexpected error occurred: %+v", err)
+	var errs []error
+	for _, arg := range args {
+		if err, ok := arg.(error); ok && err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		t.onFail("one or more unexpected errors occurred: %+v", errs)
 	}
 }
 
