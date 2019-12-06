@@ -24,12 +24,16 @@ type TWrapper struct {
 
 // WrapT returns a TWrapper, which allows several fluent assertions while testing.
 // WrapT can also wrap a *testing.B, if desired.
+//noinspection GoUnusedExportedFunction
 func WrapT(t testing.TB) *TWrapper {
 	return (&TWrapper{TB: t}).ContinueOnMismatch()
 }
 
+// failFunc is called whenever an expectation fails.
 type failFunc = func(fmt string, args ...interface{})
 
+// dup returns a TWrapper that has the same underlying testing.TB, but uses the
+// given onFail function rather than the original.
 func (t *TWrapper) dup(ff failFunc) *TWrapper {
 	return &TWrapper{
 		TB:     t.TB,
@@ -37,11 +41,11 @@ func (t *TWrapper) dup(ff failFunc) *TWrapper {
 	}
 }
 
-// As adds the obj's Go representation (using the verb %+v) if an expectation
+// As adds the obj's Go representation (using the verb %#v) if an expectation
 // fails. Use it with statements like:
 //     w.As("empty json input").ShouldFail(validateJSON(""))
 // or
-//     w.As(myType{f1: "value"}).Should...
+//     w.As(testParams).ShouldFail(someFunc(testParams))
 // On failure, prints messages like:
 //     "Failure for 'empty json input': expected an error, but none occurred.
 // or
@@ -50,16 +54,18 @@ func (t *TWrapper) As(obj interface{}) *TWrapper {
 	t.Helper()
 	t2 := t.dup(func(failFmt string, failArgs ...interface{}) {
 		t.Helper()
-		t.onFail(fmt.Sprintf("Failure for '%+v': %s", obj, failFmt), failArgs...)
+		t.onFail(fmt.Sprintf("Failure for '%#v': %s", obj, failFmt), failArgs...)
 	})
 	return t2
 }
 
-// Asf works like As, but uses a format string and arguments instead printing
-// the input with %+v.
+// Asf works similarly to As, but takes a format string and arguments.
 //
-// fmt.Sprintf is only called if an expectation fails, so this can speed up a
-// test that loops over a large number of values and uses `As(fmt.Sprint(...))`.
+// fmt.Sprintf is only called if an expectation fails, so besides being a nice
+// shorthand, it's usually faster, assuming tests producing lots of failures.
+// On the other hand, it means that if an argument (or its members) is shared
+// among goroutines, the output is non-deterministic. In that case you can use
+//     `As(fmt.Sprint(...))`
 func (t *TWrapper) Asf(format string, args ...interface{}) *TWrapper {
 	t.Helper()
 	t2 := t.dup(func(failFmt string, failArgs ...interface{}) {
@@ -554,6 +560,7 @@ func (t *TWrapper) ShouldContainStr(x, y string) {
 }
 
 // ShouldFail fails if none of its args are a non-nil error.
+// That is, it passes if any of its args are a non-nil error.
 //
 // It can be used with the immediate result of a function: w.ShouldFail(f()).
 // If the function doesn't return any error types, it will always fail.
@@ -572,11 +579,11 @@ func (t *TWrapper) ShouldFail(args ...interface{}) {
 	}
 }
 
-// ShouldSucceed fails if any of its args have type error and are non-nil.
+// ShouldSucceed fails if any of its args is a non-nil error.
+// That is, it passes if all of its args are either nil or not error.
+// If non of the arguments implement the error interface, it always succeed.
 //
 // It can be used with the immediate result of a function: w.ShouldSucceed(f()).
-// If the function doesn't return any error types, it will always succeed.
-//
 // This can also be used to verify the results of multiple functions that each
 // return a single error: w.ShouldSucceed(f1(), f2(), f3()). Unfortunately, Go
 // won't allow you to pass in multiple functions if one or more of them return
