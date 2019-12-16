@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TWrapper wraps a *testing.T, allowing fluent asserts with clear error messages.
@@ -193,10 +194,6 @@ type Iterator interface {
 	// Value returns the current iterator element.
 	// It will panic if the iterator is exhausted.
 	Value() (v reflect.Value)
-	// Reset resets the iterator to its initial value.
-	// Resetting an iterator that's 'empty' (in the sense that Next will never
-	// return true) should not result in a panic.
-	Reset()
 }
 
 // Iterable types can return an iterator.
@@ -209,10 +206,37 @@ type Iterable interface {
 // RuneIterable implements an iterator that returns runes for a string.
 type RuneIterable string
 
-func (r RuneIterable) GetIterator() Iterator {
-	return &listIter{
-		idx: 0, len: len(r), idxFunc: func(i int) reflect.Value { return reflect.ValueOf(r[i]) },
+// GetIterator returns an Iterator for the RuneIterable, which uses a channel
+// and a Go routine. As a result, the caller must exhaust the iterator to prevent
+// a resource leak.
+func (ri RuneIterable) GetIterator() Iterator {
+	return &runeIter{idx: -1, b: []byte(ri)}
+}
+
+type runeIter struct {
+	idx int
+	b   []byte
+	r   rune
+}
+
+func (ri *runeIter) Next() bool {
+	if ri.idx >= len(ri.b) {
+		panic("Next called on exhausted list iterator")
 	}
+
+	r, l := utf8.DecodeRune(ri.b[ri.idx:])
+	ri.r, ri.idx = r, ri.idx+l
+	return ri.idx < len(ri.b)
+}
+
+func (ri *runeIter) Value() reflect.Value {
+	if ri.idx == -1 {
+		panic("Value called before next")
+	}
+	if ri.idx >= len(ri.b) {
+		panic("Value called on exhausted list iterator")
+	}
+	return reflect.ValueOf(ri.r)
 }
 
 type listIter struct {
@@ -238,19 +262,12 @@ func (li *listIter) Value() reflect.Value {
 	return li.idxFunc(li.idx)
 }
 
-func (li *listIter) Reset() {
-	li.idx = -1
-}
-
 type mapKeyIter struct {
 	// *reflect.MapIter - added in 1.12, so not usable for us right now :(
 	uMap reflect.Value // underlying map
 	keys *listIter
 }
 
-func (mki *mapKeyIter) Reset() {
-	mki.keys.Reset()
-}
 func (mki *mapKeyIter) Next() bool {
 	return mki.keys.Next()
 }
@@ -263,39 +280,35 @@ type mapValIter struct {
 	uMap reflect.Value
 }
 
-func (mi *mapValIter) Reset() {
-	mi.MapIter = mi.uMap.MapRange()
-}
-
 // NewIterator returns an Iterator for a slice, array, string, or map, or a type
 // that implements the Iterable or Iterator interfaces.
 //
-// Other types return a nil iterator and an error. Map types return an iterator
+// Other types return a nil iterator and false. Map types return an iterator
 // over their keys; to obtain an iterator over its values, use NewValueIterator.
 //
 // By default, strings iterate over their bytes. To instead iterate over its
 // runes, cast it using RuneIterable.
-func NewIterator(i interface{}) (Iterator, error) {
-	if it, ok := i.(Iterator); ok {
-		return it, nil
+func NewIterator(i interface{}) (it Iterator, ok bool) {
+	if it, ok = i.(Iterator); ok {
+		return
 	}
 	if it, ok := i.(Iterable); ok {
-		return it.GetIterator(), nil
+		return it.GetIterator(), ok
 	}
 
 	v := reflect.ValueOf(i)
 	switch v.Kind() {
 	case reflect.Slice, reflect.Array, reflect.String:
-		return &listIter{len: v.Len(), idxFunc: v.Index, idx: -1}, nil
+		it = &listIter{len: v.Len(), idxFunc: v.Index, idx: -1}
+		ok = true
 	case reflect.Map:
-		li, err := NewIterator(v.MapKeys())
-		if err != nil {
-			return nil, err
+		it, ok = NewIterator(v.MapKeys())
+		if ok {
+			it = &mapKeyIter{keys: it.(*listIter), uMap: v}
 		}
-		return &mapKeyIter{keys: li.(*listIter), uMap: v}, nil
 	}
 
-	return nil, errors.New("non-iterable type")
+	return
 }
 
 // NewValueIterator returns an Iterator over the Values of a Map, rather than
@@ -313,7 +326,6 @@ func NewValueIterator(i interface{}) (Iterator, error) {
 // contains returns true if v is any element of the given iterator.
 func contains(iter Iterator, v reflect.Value) bool {
 	toFind := v.Interface()
-	iter.Reset()
 	for iter.Next() {
 		if reflect.DeepEqual(iter.Value().Interface(), toFind) {
 			return true
@@ -357,28 +369,30 @@ func (t *TWrapper) ShouldHaveMatchingValues(containerMap, toFindMap interface{})
 // other, then it fails.
 func (t *TWrapper) ShouldHaveOrder(x, y interface{}) {
 	t.Helper()
-	it1, err := NewIterator(x)
-	if err != nil {
+	it1, ok := NewIterator(x)
+	if !ok {
 		t.onFail("type %T for %+v is not iterable, so can't check if it matches %+v (type %T)",
 			x, x, y, y)
 	}
 
-	it2, err := NewIterator(y)
-	if err != nil {
+	it2, ok := NewIterator(y)
+	if !ok {
 		t.onFail("type %T for %+v is not iterable, so can't check if it matches %+v (type %T)",
 			y, y, x, x)
 		return
 	}
 
-	for {
-		it1HasNext := it1.Next()
-		it2HasNext := it2.Next()
-		if (it1HasNext && !it2HasNext) || (!it1HasNext && it2HasNext) {
-			t.onFail("sequences have different lengths\nx: type %T: %+v\ny: type %T: %+v",
-				x, x, y, y)
-			return
-		}
+	it1HasNext := it1.Next()
+	it2HasNext := it2.Next()
+	for it1HasNext && it2HasNext {
 		t.ShouldBeEqual(it1.Value().Interface(), it2.Value().Interface())
+		it1HasNext = it1.Next()
+		it2HasNext = it2.Next()
+	}
+	if (it1HasNext && !it2HasNext) || (!it1HasNext && it2HasNext) {
+		t.onFail("sequences have different lengths\nx: type %T: %+v\ny: type %T: %+v",
+			x, x, y, y)
+		return
 	}
 }
 
@@ -406,15 +420,16 @@ func (t *TWrapper) ShouldHaveOrder(x, y interface{}) {
 //   ShouldContain("cbad", "abc")
 func (t *TWrapper) ShouldContain(container, toFind interface{}) {
 	t.Helper()
-	conIter, err := NewIterator(container)
-	if err != nil {
+	conIter, ok := NewIterator(container)
+	if !ok {
 		t.onFail("type %T for %+v is not iterable, so can't check if it contains %+v (type %T)",
 			container, container, toFind, toFind)
+		return
 	}
 
-	fIter, _ := NewIterator(toFind)
-	if fIter == nil {
-		if !contains(conIter, reflect.ValueOf(toFind)) {
+	fIter, ok := NewIterator(toFind)
+	if !ok {
+		if contains(conIter, reflect.ValueOf(toFind)) {
 			t.onFail("%+v (type %T) does not contain %+v (type %T)",
 				container, container, toFind, toFind)
 		}
@@ -422,6 +437,7 @@ func (t *TWrapper) ShouldContain(container, toFind interface{}) {
 	}
 
 	for fIter.Next() {
+		conIter, _ = NewIterator(container)
 		toFind := fIter.Value()
 		if !contains(conIter, toFind) {
 			t.onFail("%+v (type %T) does not contain element %+v (kind %s) of iterable",
@@ -437,8 +453,7 @@ func stringish(x interface{}) bool {
 	}
 	xt := reflect.TypeOf(x)
 	return xt.Kind() == reflect.String ||
-		((xt.Kind() == reflect.Slice || xt.Kind() == reflect.Array) &&
-			xt.Elem().Kind() == reflect.Uint8)
+		(xt.Kind() == reflect.Slice && xt.Elem().Kind() == reflect.Uint8)
 }
 
 // ShouldNotBeEqual expects x and y to be unequal as compared by reflect.DeepEqual.
