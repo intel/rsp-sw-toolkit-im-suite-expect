@@ -194,6 +194,10 @@ type Iterator interface {
 	// Value returns the current iterator element.
 	// It will panic if the iterator is exhausted.
 	Value() (v reflect.Value)
+	// Reset resets the iterator to its initial value.
+	// Resetting an iterator that's 'empty' (in the sense that Next will never
+	// return true) should not result in a panic.
+	Reset()
 }
 
 // Iterable types can return an iterator.
@@ -217,6 +221,10 @@ type runeIter struct {
 	idx int
 	b   []byte
 	r   rune
+}
+
+func (ri *runeIter) Reset() {
+	ri.idx = -1
 }
 
 func (ri *runeIter) Next() bool {
@@ -262,12 +270,19 @@ func (li *listIter) Value() reflect.Value {
 	return li.idxFunc(li.idx)
 }
 
+func (li *listIter) Reset() {
+	li.idx = -1
+}
+
+
 type mapKeyIter struct {
-	// *reflect.MapIter - added in 1.12, so not usable for us right now :(
 	uMap reflect.Value // underlying map
 	keys *listIter
 }
 
+func (mki *mapKeyIter) Reset() {
+	mki.keys.Reset()
+}
 func (mki *mapKeyIter) Next() bool {
 	return mki.keys.Next()
 }
@@ -278,6 +293,10 @@ func (mki *mapKeyIter) Value() reflect.Value {
 type mapValIter struct {
 	*reflect.MapIter
 	uMap reflect.Value
+}
+
+func (mi *mapValIter) Reset() {
+	mi.MapIter = mi.uMap.MapRange()
 }
 
 // NewIterator returns an Iterator for a slice, array, string, or map, or a type
@@ -428,19 +447,22 @@ func (t *TWrapper) ShouldContain(container, toFind interface{}) {
 	}
 
 	fIter, ok := NewIterator(toFind)
+
+	// if toFind is not iterable
 	if !ok {
-		if contains(conIter, reflect.ValueOf(toFind)) {
+		if !contains(conIter, reflect.ValueOf(toFind)) {
 			t.onFail("%+v (type %T) does not contain %+v (type %T)",
 				container, container, toFind, toFind)
 		}
 		return
 	}
 
+	// if it is iterable, check that each element is in the container
 	for fIter.Next() {
-		conIter, _ = NewIterator(container)
 		toFind := fIter.Value()
+		conIter.Reset()
 		if !contains(conIter, toFind) {
-			t.onFail("%+v (type %T) does not contain element %+v (kind %s) of iterable",
+			t.onFail("%+v (type %T) does not contain element %+v (kind %s)",
 				container, container, toFind, toFind.Kind())
 		}
 	}
